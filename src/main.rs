@@ -10,10 +10,13 @@
 #![windows_subsystem = "windows"]
 #![allow(static_mut_refs, dead_code)]
 
+mod sensors;
+
 use core::ffi::c_void;
 use core::fmt::Write as _;
 use core::mem::{size_of, transmute, zeroed};
 use core::ptr::{null, null_mut};
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use windows_sys::Win32::Foundation::*;
@@ -34,19 +37,23 @@ use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 // ---------------------------------------------------------------- constants
-const N: usize = 6;
+const N: usize = 8;
 const HIST: usize = 128;
 const K_CPU: usize = 0;
-const K_MEM: usize = 1;
-const K_DC: usize = 2;
-const K_DD: usize = 3;
-const K_NET: usize = 4;
-const K_GPU: usize = 5;
+const K_TMP: usize = 1;
+const K_FAN: usize = 2;
+const K_MEM: usize = 3;
+const K_DC: usize = 4;
+const K_DD: usize = 5;
+const K_NET: usize = 6;
+const K_GPU: usize = 7;
 
-const LABELS: [&[u8]; N] = [b"CPU", b"MEM", b"C", b"D", b"NET", b"GPU"];
+const LABELS: [&[u8]; N] = [b"CPU", b"TMP", b"FAN", b"MEM", b"C", b"D", b"NET", b"GPU"];
 // Task-Manager-like accent colours.
 const COLORS: [(u32, u32, u32); N] = [
     (36, 165, 255),  // CPU  blue
+    (255, 92, 92),   // TMP  red
+    (236, 214, 84),  // FAN  yellow
     (198, 76, 240),  // MEM  purple
     (72, 224, 92),   // C:   green
     (72, 224, 92),   // D:   green
@@ -72,9 +79,10 @@ struct Ascii {
 }
 impl core::fmt::Write for Ascii {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for &c in s.as_bytes() {
+        // Latin-1 output (GDI ANSI text / tooltip widening), so U+00B0 degree sign is one byte
+        for ch in s.chars() {
             if self.n < self.b.len() {
-                self.b[self.n] = c;
+                self.b[self.n] = if (ch as u32) < 256 { ch as u32 as u8 } else { b'?' };
                 self.n += 1;
             }
         }
@@ -355,6 +363,8 @@ struct App {
     dark: bool,
     // which meters are shown
     show: [bool; N],
+    tmp_ok: bool,
+    fan_ok: bool,
     order: [usize; N],
     n_show: usize,
     // data
@@ -514,6 +524,15 @@ fn sample_net(a: &mut App, dt: f64) {
     }
 }
 
+fn sample_sensors(a: &mut App) {
+    let t = sensors::TEMP_TENTHS.load(Ordering::Relaxed);
+    let f = sensors::FAN_RPM.load(Ordering::Relaxed);
+    a.tmp_ok = t != sensors::NO_TEMP;
+    a.fan_ok = f >= 0;
+    a.cur[K_TMP] = if a.tmp_ok { t as f64 / 10.0 } else { 0.0 };
+    a.cur[K_FAN] = if a.fan_ok { f as f64 } else { 0.0 };
+}
+
 fn sample_gpu(a: &mut App) {
     unsafe {
         match &mut a.gpu {
@@ -554,6 +573,7 @@ fn tick(a: &mut App) {
     sample_disk(a, 1, dt);
     sample_net(a, dt);
     sample_gpu(a);
+    sample_sensors(a);
 
     // visibility: D: only when the volume exists
     let show_d = a.disks[1].h != INVALID_HANDLE_VALUE;
@@ -812,8 +832,8 @@ fn render(a: &mut App) {
 
             // graph scale
             let mut scale_max = 100.0f32;
-            if m == K_NET {
-                scale_max = 100.0 * 1024.0; // 100 KB/s floor, then auto-scale
+            if m == K_NET || m == K_FAN {
+                scale_max = if m == K_NET { 100.0 * 1024.0 } else { 2000.0 }; // floor, then auto-scale
                 for k in 0..ncols.min(a.count) {
                     let v = a.hist[m][(a.head + HIST - k) % HIST];
                     if v > scale_max {
@@ -888,6 +908,21 @@ fn render(a: &mut App) {
             let mut r1 = RECT { left: (cx0 + 6.0 * s) as i32, top: (y0 + 3.0 * s) as i32, right: (cx0 + cw) as i32, bottom: (y0 + 17.0 * s) as i32 };
             SelectObject(a.tdc, a.font_label);
             DrawTextA(a.tdc, LABELS[m].as_ptr(), LABELS[m].len() as i32, &mut r1, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            if m == K_TMP || m == K_FAN {
+                // these two have no other readout, so show the number too
+                let ok = if m == K_TMP { a.tmp_ok } else { a.fan_ok };
+                let mut val = Ascii { b: [0; 96], n: 0 };
+                if !ok {
+                    let _ = write!(val, "--");
+                } else if m == K_TMP {
+                    let _ = write!(val, "{:.0}\u{b0}", a.cur[K_TMP]);
+                } else {
+                    let _ = write!(val, "{:.0}", a.cur[K_FAN]);
+                }
+                let mut r2 = RECT { left: (cx0 + 6.0 * s) as i32, top: (y0 + 17.0 * s) as i32, right: (cx0 + cw) as i32, bottom: (y0 + ch - 1.0 * s) as i32 };
+                SelectObject(a.tdc, a.font_value);
+                DrawTextA(a.tdc, val.b.as_ptr(), val.n as i32, &mut r2, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
         }
 
         let mask = core::slice::from_raw_parts(a.tbits, w * h);
@@ -1076,6 +1111,20 @@ fn tip_text(a: &App, m: usize, out: &mut Ascii) {
     match m {
         K_CPU => {
             let _ = write!(out, "CPU  {:.0}%", a.cur[K_CPU]);
+        }
+        K_TMP => {
+            if a.tmp_ok {
+                let _ = write!(out, "CPU temperature  {:.1} \u{b0}C", a.cur[K_TMP]);
+            } else {
+                let _ = write!(out, "CPU temperature unavailable\nrun LibreHardwareMonitor with\nits Remote Web Server enabled");
+            }
+        }
+        K_FAN => {
+            if a.fan_ok {
+                let _ = write!(out, "CPU fan  {:.0} RPM", a.cur[K_FAN]);
+            } else {
+                let _ = write!(out, "CPU fan unavailable\nrun LibreHardwareMonitor with\nits Remote Web Server enabled");
+            }
         }
         K_MEM => {
             let _ = write!(out, "Memory  {:.0}%\n{:.1} / {:.1} GB in use", a.cur[K_MEM], gb(a.mem_used), gb(a.mem_total));
@@ -1342,6 +1391,7 @@ fn main() {
         }
         let has_gpu = !matches!(gpu, Gpu::None);
 
+        std::thread::spawn(sensors::poll_forever);
         let mk_disk = |l: u8| Disk { letter: l, h: INVALID_HANDLE_VALUE, prev_idle: 0, prev_q: 0, prev_r: 0, prev_w: 0, have_prev: false, rd: 0.0, wr: 0.0, last_try: 0 };
         let app_box = Box::new(App {
             hinst,
@@ -1366,7 +1416,9 @@ fn main() {
             old_bmp: null_mut(),
             old_tbmp: null_mut(),
             dark: read_theme_dark(),
-            show: [true, true, true, false, true, has_gpu],
+            show: [true, true, true, true, true, false, true, has_gpu],
+            tmp_ok: false,
+            fan_ok: false,
             order: [0; N],
             n_show: 0,
             hist: [[0.0; HIST]; N],

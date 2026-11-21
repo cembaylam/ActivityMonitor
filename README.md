@@ -5,6 +5,8 @@ Tiny, Task Manager–style performance meters that live **in your Windows taskba
 | Meter | What it shows |
 |-------|---------------|
 | **CPU** | Total processor utilisation |
+| **TMP** | CPU temperature in °C (via LibreHardwareMonitor, see below) |
+| **FAN** | CPU fan speed in RPM (via LibreHardwareMonitor, see below) |
 | **MEM** | Physical memory in use |
 | **C** | Disk activity of the `C:` drive (active time, like Task Manager) |
 | **D** | Disk activity of the `D:` drive (hidden automatically if the drive is absent) |
@@ -15,7 +17,7 @@ Tiny, Task Manager–style performance meters that live **in your Windows taskba
 
 ![The six meters, zoomed](docs/meters.png)
 
-Hover a meter for the details:
+Hover a meter for the details (the tooltip below is what you see while LibreHardwareMonitor is not running):
 
 ![Tooltip](docs/tooltip.png)
 
@@ -28,6 +30,21 @@ Hover a meter for the details:
 - **Right-click menu** – *Open Task Manager*, *Start with Windows*, *Exit*. Double-click a meter to open Task Manager.
 - **Single instance** – starting it twice does nothing.
 
+## CPU temperature and fan speed (TMP / FAN)
+
+Windows has no built-in way to read the CPU temperature or fan RPM without a kernel driver (ACPI thermal zones and `Win32_Fan` are empty on most desktops). Rather than shipping a driver, Activity Monitor reads the sensors from [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor), which already has one:
+
+1. Install and run LibreHardwareMonitor (as administrator, so it can load its driver).
+2. In LibreHardwareMonitor enable **Options → Remote Web Server → Run** (default port `8085`).
+3. The **TMP** and **FAN** meters pick the values up within a couple of seconds.
+
+Details:
+
+- A background thread polls `http://127.0.0.1:8085/data.json` every 2 s (every 5 s while it is unreachable), so the UI never blocks. Use the `ACTIVITYMONITOR_LHM_PORT` environment variable for a different port.
+- TMP prefers `Tctl/Tdie` / `Package`, then `Max`, then any CPU temperature sensor. FAN prefers a fan whose name contains `CPU`, otherwise the fastest non-GPU fan.
+- Without LibreHardwareMonitor the two meters simply show `--`; everything else works as before.
+- Activity Monitor itself still needs no admin rights and installs no driver.
+
 ## How it measures (and why it is cheap)
 
 | Meter | Source |
@@ -36,6 +53,7 @@ Hover a meter for the details:
 | Memory | `GlobalMemoryStatusEx` |
 | Disks | `IOCTL_DISK_PERFORMANCE` on `\.\C:` / `\.\D:` (idle-time delta → active time, plus byte counters) |
 | Network | `GetIfTable2` octet counters, hardware interfaces only (no double counting of virtual/loopback adapters) |
+| TMP / FAN | LibreHardwareMonitor's local JSON feed (see above) |
 | GPU | NVML (`nvmlDeviceGetUtilizationRates`) if `nvml.dll` is present; otherwise the `GPU Engine` PDH counters (highest engine type, like Task Manager) |
 
 Rendering is done in software into a small premultiplied-alpha bitmap that is pushed with `UpdateLayeredWindow` once per second.
@@ -84,7 +102,8 @@ wix build installer\Product.wxs -arch x64 -o installer\ActivityMonitor.msi
 ## Project layout
 
 ```
-src/main.rs          the whole application (sampling, rendering, window management)
+src/main.rs          the application (sampling, rendering, window management)
+src/sensors.rs       CPU temperature / fan polling (LibreHardwareMonitor JSON feed)
 app.manifest         DPI awareness, Win8+ compatibility (layered child windows), common controls v6
 build.rs             embeds the manifest
 installer/Product.wxs  WiX source for the per-user MSI
