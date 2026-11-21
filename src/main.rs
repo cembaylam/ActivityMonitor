@@ -1241,6 +1241,10 @@ fn show_tip(a: &mut App) {
             SendMessageW(a.tip, TTM_TRACKACTIVATE, 0, &ti as *const _ as isize);
             return;
         }
+        if a.hover as usize != K_FAN {
+            // hovering any other meter closes the fan panel right away
+            fanpanel::hide();
+        }
         if a.hover as usize == K_FAN {
             // the FAN meter shows the fan-control popup instead of a plain tooltip
             SendMessageW(a.tip, TTM_TRACKACTIVATE, 0, &ti as *const _ as isize);
