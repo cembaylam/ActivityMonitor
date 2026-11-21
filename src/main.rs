@@ -48,7 +48,7 @@ const K_DD: usize = 5;
 const K_NET: usize = 6;
 const K_GPU: usize = 7;
 
-const LABELS: [&[u8]; N] = [b"CPU", b"TMP", b"FAN", b"MEM", b"C", b"D", b"NET", b"GPU"];
+const LABELS: [&[u8]; N] = [b"CPU", b"TMP", b"FAN", b"MEM", b"C:", b"D:", b"NET", b"GPU"];
 // Task-Manager-like accent colours.
 const COLORS: [(u32, u32, u32); N] = [
     (36, 165, 255),  // CPU  blue
