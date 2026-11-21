@@ -246,6 +246,10 @@ fn addr() -> std::net::SocketAddr {
 
 /// Set the CPU fan duty cycle (percent), or hand control back to the BIOS/automatic curve with a negative value.
 pub fn set_control(v: i32) -> bool {
+    set_control_inner(v)
+}
+
+fn set_control_inner(v: i32) -> bool {
     use std::io::{Read, Write};
     let id = match CONTROL_ID.lock() {
         Ok(g) if !g.is_empty() => g.clone(),
@@ -258,8 +262,11 @@ pub fn set_control(v: i32) -> bool {
     if s.write_all(req.as_bytes()).is_err() {
         return false;
     }
-    let mut head = [0u8; 16];
-    matches!(s.read(&mut head), Ok(n) if n >= 12 && &head[9..12] == b"200")
+    // Read the whole response before closing: dropping the socket with unread data makes Windows send a
+    // reset, and LibreHardwareMonitor then sometimes discards the request it was handling.
+    let mut resp = Vec::with_capacity(512);
+    let _ = (&s).take(4096).read_to_end(&mut resp);
+    resp.len() >= 12 && &resp[9..12] == b"200"
 }
 
 fn fetch(addr: &std::net::SocketAddr) -> Option<Vec<u8>> {

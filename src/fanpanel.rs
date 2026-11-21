@@ -79,6 +79,9 @@ fn control_thread(rx: Receiver<i32>) {
             v = n; // only the latest request matters
         }
         sensors::set_control(v);
+        // LibreHardwareMonitor falls behind (and keeps applying stale values for seconds) when it is
+        // flooded with requests, e.g. from a fast mouse wheel, so send at most ~4 per second.
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
 }
 
