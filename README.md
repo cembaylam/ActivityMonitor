@@ -84,7 +84,7 @@ Build the installer (see below) and run `installer\ActivityMonitor.msi`. It is a
 
 - installs to `%LocalAppData%\ActivityMonitor`
 - registers the app to **start with Windows** (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`)
-- starts it immediately; upgrades and uninstalls close the running instance first
+- adds an **Activity Monitor** entry to the Start menu (search for it if you quit the app)`r`n- starts it immediately; upgrades and uninstalls close the running instance first
 
 Silent install / uninstall:
 
