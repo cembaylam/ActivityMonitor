@@ -164,6 +164,12 @@ fn parse_num(v: &str) -> Option<f32> {
     t.parse().ok()
 }
 
+// optional override: ACTIVITYMONITOR_FAN_NAME="fan #1" picks the fan whose name contains that text
+fn fan_pref() -> &'static str {
+    static PREF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREF.get_or_init(|| std::env::var("ACTIVITYMONITOR_FAN_NAME").unwrap_or_default().to_ascii_lowercase())
+}
+
 type Pick = Option<(u8, f32)>; // (rank, value) - lower rank wins
 
 fn walk(n: &Node, under_cpu: bool, under_gpu: bool, temp: &mut Pick, fan: &mut Pick) {
@@ -188,7 +194,16 @@ fn walk(n: &Node, under_cpu: bool, under_gpu: bool, temp: &mut Pick, fan: &mut P
                 }
             } else if n.value.ends_with("RPM") && !gpu {
                 // prefer a fan named "CPU"; otherwise the fastest spinning one
-                let rank = if name.contains("cpu") { 0 } else { 1 };
+                if name.contains("chipset") {
+                    return;
+                }
+                let rank = if !fan_pref().is_empty() && name.contains(fan_pref()) {
+                    0
+                } else if name.contains("cpu") {
+                    1
+                } else {
+                    2
+                };
                 let better = match *fan {
                     None => true,
                     Some((r, f)) => rank < r || (rank == r && v > f),

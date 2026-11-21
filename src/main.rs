@@ -756,8 +756,8 @@ fn create_surfaces(a: &mut App) {
                 face.as_ptr(),
             )
         };
-        a.font_label = mkfont(10.5, 700);
-        a.font_value = mkfont(14.0, 600);
+        a.font_label = mkfont(10.5, 400);
+        a.font_value = mkfont(13.0, 400);
         SelectObject(a.tdc, a.font_label);
         SetBkMode(a.tdc, TRANSPARENT as i32);
         SetTextColor(a.tdc, 0x00FFFFFF);

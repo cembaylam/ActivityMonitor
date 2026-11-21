@@ -17,7 +17,7 @@ Tiny, Task Manager–style performance meters that live **in your Windows taskba
 
 ![The six meters, zoomed](docs/meters.png)
 
-Hover a meter for the details (the tooltip below is what you see while LibreHardwareMonitor is not running):
+Hover a meter for the details:
 
 ![Tooltip](docs/tooltip.png)
 
@@ -41,7 +41,8 @@ Windows has no built-in way to read the CPU temperature or fan RPM without a ker
 Details:
 
 - A background thread polls `http://127.0.0.1:8085/data.json` every 2 s (every 5 s while it is unreachable), so the UI never blocks. Use the `ACTIVITYMONITOR_LHM_PORT` environment variable for a different port.
-- TMP prefers `Tctl/Tdie` / `Package`, then `Max`, then any CPU temperature sensor. FAN prefers a fan whose name contains `CPU`, otherwise the fastest non-GPU fan.
+- TMP prefers `Tctl/Tdie` / `Package`, then `Max`, then any CPU temperature sensor. FAN prefers a fan whose name contains `CPU`, otherwise the fastest fan that is not a GPU or chipset fan. To pin a specific fan, set `ACTIVITYMONITOR_FAN_NAME` to part of its name, e.g. `fan #1`.
+- LibreHardwareMonitor needs administrator rights for its driver. To have it ready after every sign-in without a UAC prompt, register it as a scheduled task that runs at logon with highest privileges (set *Start Minimized* and the web server in its options first).
 - Without LibreHardwareMonitor the two meters simply show `--`; everything else works as before.
 - Activity Monitor itself still needs no admin rights and installs no driver.
 
