@@ -4,17 +4,27 @@
 // with its "Remote Web Server" enabled it serves every sensor as JSON on localhost. A background thread
 // polls that every couple of seconds so the UI thread never blocks. If LibreHardwareMonitor is not
 // running the values simply read as "unavailable".
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 pub const NO_TEMP: i32 = i32::MIN;
 pub static TEMP_TENTHS: AtomicI32 = AtomicI32::new(NO_TEMP); // tenths of a degree C
 pub static FAN_RPM: AtomicI32 = AtomicI32::new(-1);
+pub static CONTROL_TENTHS: AtomicI32 = AtomicI32::new(NO_TEMP); // duty cycle of the chosen fan's control, tenths of %
+static CONTROL_ID: Mutex<String> = Mutex::new(String::new());
+pub static LHM_UP: AtomicBool = AtomicBool::new(false);
+
+pub fn control_available() -> bool {
+    CONTROL_ID.lock().map(|g| !g.is_empty()).unwrap_or(false)
+}
 
 struct Node {
     text: String,
     value: String,
     image: String,
+    sensor_id: String,
+    kind: String,
     children: Vec<Node>,
 }
 
@@ -115,7 +125,7 @@ impl<'a> Json<'a> {
         if !self.eat(b'{') {
             return None;
         }
-        let mut n = Node { text: String::new(), value: String::new(), image: String::new(), children: Vec::new() };
+        let mut n = Node { text: String::new(), value: String::new(), image: String::new(), sensor_id: String::new(), kind: String::new(), children: Vec::new() };
         loop {
             if self.eat(b'}') {
                 return Some(n);
@@ -129,6 +139,8 @@ impl<'a> Json<'a> {
                 "Text" => n.text = self.string()?,
                 "Value" => n.value = self.string().unwrap_or_default(),
                 "ImageURL" => n.image = self.string().unwrap_or_default(),
+                "SensorId" => n.sensor_id = self.string().unwrap_or_default(),
+                "Type" => n.kind = self.string().unwrap_or_default(),
                 "Children" => {
                     if !self.eat(b'[') {
                         return None;
@@ -172,7 +184,7 @@ fn fan_pref() -> &'static str {
 
 type Pick = Option<(u8, f32)>; // (rank, value) - lower rank wins
 
-fn walk(n: &Node, under_cpu: bool, under_gpu: bool, temp: &mut Pick, fan: &mut Pick) {
+fn walk(n: &Node, under_cpu: bool, under_gpu: bool, temp: &mut Pick, fan: &mut Pick, fan_id: &mut String) {
     let img = n.image.to_ascii_lowercase();
     let cpu = under_cpu || img.contains("cpu");
     let gpu = under_gpu || img.contains("gpu") || img.contains("nvidia") || img.contains("ati");
@@ -210,13 +222,44 @@ fn walk(n: &Node, under_cpu: bool, under_gpu: bool, temp: &mut Pick, fan: &mut P
                 };
                 if better {
                     *fan = Some((rank, v));
+                    *fan_id = n.sensor_id.clone();
                 }
             }
         }
     }
     for c in &n.children {
-        walk(c, cpu, gpu, temp, fan);
+        walk(c, cpu, gpu, temp, fan, fan_id);
     }
+}
+
+fn find_control(n: &Node, id: &str) -> Option<f32> {
+    if n.kind == "Control" && n.sensor_id == id {
+        return parse_num(&n.value);
+    }
+    n.children.iter().find_map(|c| find_control(c, id))
+}
+
+fn addr() -> std::net::SocketAddr {
+    let port: u16 = std::env::var("ACTIVITYMONITOR_LHM_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8085);
+    std::net::SocketAddr::from(([127, 0, 0, 1], port))
+}
+
+/// Set the CPU fan duty cycle (percent), or hand control back to the BIOS/automatic curve with a negative value.
+pub fn set_control(v: i32) -> bool {
+    use std::io::{Read, Write};
+    let id = match CONTROL_ID.lock() {
+        Ok(g) if !g.is_empty() => g.clone(),
+        _ => return false,
+    };
+    let val = if v < 0 { "null".to_string() } else { v.clamp(0, 100).to_string() };
+    let Ok(mut s) = std::net::TcpStream::connect_timeout(&addr(), Duration::from_millis(300)) else { return false };
+    let _ = s.set_read_timeout(Some(Duration::from_millis(1500)));
+    let req = format!("GET /Sensor?action=Set&id={}&value={} HTTP/1.0\r\nHost: localhost\r\n\r\n", id, val);
+    if s.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut head = [0u8; 16];
+    matches!(s.read(&mut head), Ok(n) if n >= 12 && &head[9..12] == b"200")
 }
 
 fn fetch(addr: &std::net::SocketAddr) -> Option<Vec<u8>> {
@@ -232,21 +275,33 @@ fn fetch(addr: &std::net::SocketAddr) -> Option<Vec<u8>> {
 }
 
 pub fn poll_forever() {
-    let port: u16 = std::env::var("ACTIVITYMONITOR_LHM_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8085);
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = addr();
     loop {
         let mut ok = false;
         if let Some(body) = fetch(&addr) {
             let mut j = Json { b: &body, i: 0 };
             if let Some(root) = j.node() {
                 let (mut t, mut f) = (None, None);
-                walk(&root, false, false, &mut t, &mut f);
+                let mut fan_id = String::new();
+                walk(&root, false, false, &mut t, &mut f, &mut fan_id);
+                // the matching fan control sensor shares the hardware path: .../fan/N -> .../control/N
+                let ctl_id = if fan_id.contains("/fan/") { fan_id.replace("/fan/", "/control/") } else { String::new() };
+                let ctl = if ctl_id.is_empty() { None } else { find_control(&root, &ctl_id) };
+                CONTROL_TENTHS.store(ctl.map_or(NO_TEMP, |v| (v * 10.0).round() as i32), Ordering::Relaxed);
+                if let Ok(mut g) = CONTROL_ID.lock() {
+                    *g = if ctl.is_some() { ctl_id } else { String::new() };
+                }
                 TEMP_TENTHS.store(t.map_or(NO_TEMP, |(_, v)| (v * 10.0).round() as i32), Ordering::Relaxed);
                 FAN_RPM.store(f.map_or(-1, |(_, v)| v.round() as i32), Ordering::Relaxed);
                 ok = true;
             }
         }
+        LHM_UP.store(ok, Ordering::Relaxed);
         if !ok {
+            CONTROL_TENTHS.store(NO_TEMP, Ordering::Relaxed);
+            if let Ok(mut g) = CONTROL_ID.lock() {
+                g.clear();
+            }
             TEMP_TENTHS.store(NO_TEMP, Ordering::Relaxed);
             FAN_RPM.store(-1, Ordering::Relaxed);
         }

@@ -28,6 +28,7 @@ Hover a meter for the details:
 - **Sits in the taskbar** – attaches to the taskbar as a child window and positions itself left of the notification area. It follows DPI/scale changes, display changes, theme changes, and re-attaches itself if Explorer restarts.
 - **Details on hover** – memory used / total, disk read/write rates, network up/down rates, VRAM usage.
 - **Right-click menu** – *Open Task Manager*, *Start with Windows*, *Exit*. Double-click a meter to open Task Manager.
+- **Fan control** – hover the FAN meter for a slider to set the CPU fan speed (see below).
 - **Single instance** – starting it twice does nothing.
 
 ## CPU temperature and fan speed (TMP / FAN)
@@ -45,6 +46,20 @@ Details:
 - LibreHardwareMonitor needs administrator rights for its driver. To have it ready after every sign-in without a UAC prompt, register it as a scheduled task that runs at logon with highest privileges (set *Start Minimized* and the web server in its options first).
 - Without LibreHardwareMonitor the two meters simply show `--`; everything else works as before.
 - Activity Monitor itself still needs no admin rights and installs no driver.
+
+## Fan speed control
+
+Hover the **FAN** meter to open a small control panel with the live RPM, the current duty cycle and a slider:
+
+![Fan control panel](docs/fan-panel.png)
+
+| Input | Action |
+|-------|--------|
+| Mouse | click or drag the slider; **Auto** button returns to the automatic curve |
+| Mouse wheel | while hovering the FAN meter or the panel: ±2 % per notch |
+| Keyboard | click the panel once to focus it, then `←` `→` / `↑` `↓` ±1 %, `PgUp` `PgDn` ±10 %, `Home` = minimum, `End` = 100 %, `A` = Auto, `Esc` = close |
+
+Safety rules: the speed never goes below **20 %**; the app drops back to **Auto** automatically if the CPU reaches **85 °C** or the sensor feed disappears, and it restores Auto when you exit it. Fan control uses LibreHardwareMonitor's `Sensor?action=Set` endpoint for the control sensor that matches the fan shown in the FAN meter, so it requires the same setup as TMP/FAN and a board whose Super I/O fan outputs LibreHardwareMonitor can control. If LibreHardwareMonitor is closed it also drops any manual setting.
 
 ## How it measures (and why it is cheap)
 
@@ -104,7 +119,8 @@ wix build installer\Product.wxs -arch x64 -o installer\ActivityMonitor.msi
 
 ```
 src/main.rs          the application (sampling, rendering, window management)
-src/sensors.rs       CPU temperature / fan polling (LibreHardwareMonitor JSON feed)
+src/sensors.rs       CPU temperature / fan polling and fan control (LibreHardwareMonitor)
+src/fanpanel.rs      fan-control popup (slider, Auto button, keyboard/wheel handling)
 app.manifest         DPI awareness, Win8+ compatibility (layered child windows), common controls v6
 build.rs             embeds the manifest
 installer/Product.wxs  WiX source for the per-user MSI

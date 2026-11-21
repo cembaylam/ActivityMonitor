@@ -10,6 +10,7 @@
 #![windows_subsystem = "windows"]
 #![allow(static_mut_refs, dead_code)]
 
+mod fanpanel;
 mod sensors;
 
 use core::ffi::c_void;
@@ -574,6 +575,11 @@ fn tick(a: &mut App) {
     sample_net(a, dt);
     sample_gpu(a);
     sample_sensors(a);
+    fanpanel::update(
+        if a.fan_ok { a.cur[K_FAN] as i32 } else { -1 },
+        if a.tmp_ok { a.cur[K_TMP] as f32 } else { -1.0 },
+        sensors::LHM_UP.load(Ordering::Relaxed),
+    );
 
     // visibility: D: only when the volume exists
     let show_d = a.disks[1].h != INVALID_HANDLE_VALUE;
@@ -1174,6 +1180,17 @@ fn cell_at(a: &App, x: i32) -> i32 {
     }
 }
 
+fn cell_screen_rect(a: &App, m: usize) -> RECT {
+    unsafe {
+        let slot = (0..a.n_show).find(|&i| a.order[i] == m).unwrap_or(0);
+        let (x_first, cw, gap, y0, ch) = cell_geometry(a);
+        let mut r: RECT = zeroed();
+        GetWindowRect(a.view, &mut r);
+        let l = r.left + (x_first + slot as f32 * (cw + gap)) as i32;
+        RECT { left: l, top: r.top + y0 as i32, right: l + cw as i32, bottom: r.top + (y0 + ch) as i32 }
+    }
+}
+
 fn show_tip(a: &mut App) {
     unsafe {
         if a.tip.is_null() {
@@ -1185,6 +1202,12 @@ fn show_tip(a: &mut App) {
         ti.uId = 1;
         if a.hover < 0 {
             SendMessageW(a.tip, TTM_TRACKACTIVATE, 0, &ti as *const _ as isize);
+            return;
+        }
+        if a.hover as usize == K_FAN {
+            // the FAN meter shows the fan-control popup instead of a plain tooltip
+            SendMessageW(a.tip, TTM_TRACKACTIVATE, 0, &ti as *const _ as isize);
+            fanpanel::show(cell_screen_rect(a, K_FAN), a.scale, false);
             return;
         }
         let mut t = Ascii { b: [0; 96], n: 0 };
@@ -1307,6 +1330,18 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 context_menu(a);
                 return 0;
             }
+            WM_LBUTTONDOWN => {
+                if cell_at(a, (lp & 0xFFFF) as i16 as i32) == K_FAN as i32 {
+                    fanpanel::show(cell_screen_rect(a, K_FAN), a.scale, true);
+                }
+                return 0;
+            }
+            WM_MOUSEWHEEL => {
+                if a.hover == K_FAN as i32 {
+                    fanpanel::wheel((((wp >> 16) & 0xFFFF) as i16 as i32) / 120 * 2);
+                }
+                return 0;
+            }
             WM_LBUTTONDBLCLK => {
                 open_taskmgr();
                 return 0;
@@ -1339,6 +1374,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_CLOSE => {
+            fanpanel::shutdown();
             DestroyWindow(hwnd);
             0
         }
@@ -1455,6 +1491,7 @@ fn main() {
         APP = Box::into_raw(app_box);
         let a = app();
         rebuild_order(a);
+        fanpanel::init();
 
         a.ctl = CreateWindowExW(WS_EX_TOOLWINDOW, cls.as_ptr(), wide("ActivityMonitor").as_ptr(), WS_POPUP, 0, 0, 0, 0, null_mut(), null_mut(), hinst, null());
 
