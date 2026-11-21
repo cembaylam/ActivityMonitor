@@ -751,13 +751,13 @@ fn create_surfaces(a: &mut App) {
                 DEFAULT_CHARSET as u32,
                 OUT_DEFAULT_PRECIS as u32,
                 CLIP_DEFAULT_PRECIS as u32,
-                ANTIALIASED_QUALITY as u32,
+                CLEARTYPE_QUALITY as u32,
                 (DEFAULT_PITCH | FF_DONTCARE) as u32,
                 face.as_ptr(),
             )
         };
-        a.font_label = mkfont(10.5, 400);
-        a.font_value = mkfont(13.0, 400);
+        a.font_label = mkfont(12.0, 400);
+        a.font_value = mkfont(15.0, 400);
         SelectObject(a.tdc, a.font_label);
         SetBkMode(a.tdc, TRANSPARENT as i32);
         SetTextColor(a.tdc, 0x00FFFFFF);
@@ -814,7 +814,7 @@ fn render(a: &mut App) {
         let bw = (1.0 * s).max(1.0);
         let lw = (1.6 * s).max(1.0);
         let dark = a.dark;
-        let (_bg, bg_a): ((u32, u32, u32), u32) = if dark { ((0, 0, 0), 238) } else { ((0, 0, 0), 238) };
+        let (_bg, bg_a): ((u32, u32, u32), u32) = if dark { ((0, 0, 0), 255) } else { ((0, 0, 0), 255) };
 
         // clear text mask
         core::slice::from_raw_parts_mut(a.tbits, w * h).fill(0);
@@ -936,8 +936,17 @@ fn render(a: &mut App) {
                 let slot = ((xf / (cw + gap)) as usize).min(a.n_show - 1);
                 let (cr, cg, cb) = COLORS[a.order[slot]];
                 let c = if dark { ((cr + 255) / 2 + 25, (cg + 255) / 2 + 25, (cb + 255) / 2 + 25) } else { (cr / 2, cg / 2, cb / 2) };
-                let cov = ((mv >> 8) & 255) * 225 / 255;
-                blend(&mut px[y * w + x], c.0.min(255), c.1.min(255), c.2.min(255), cov);
+                // ClearType: per-channel coverage (R,G,B) from the mask, applied to the opaque card colour
+                let (cr_, cg_, cb_) = ((mv >> 16) & 255, (mv >> 8) & 255, mv & 255);
+                let dst = &mut px[y * w + x];
+                if (*dst >> 24) == 255 {
+                    let mix = |d: u32, t: u32, k: u32| (t * k + d * (255 - k) + 127) / 255;
+                    let (dr, dg, db) = ((*dst >> 16) & 255, (*dst >> 8) & 255, *dst & 255);
+                    *dst = 0xFF00_0000 | (mix(dr, c.0.min(255), cr_) << 16) | (mix(dg, c.1.min(255), cg_) << 8) | mix(db, c.2.min(255), cb_);
+                } else {
+                    let cov = (cr_ + cg_ + cb_) / 3;
+                    blend(dst, c.0.min(255), c.1.min(255), c.2.min(255), cov);
+                }
             }
         }
     }
