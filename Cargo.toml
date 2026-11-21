@@ -1,6 +1,6 @@
 [package]
 name = "activity-monitor"
-version = "1.2.1"
+version = "1.2.2"
 description = "Tiny Task Manager-style CPU, memory, disk, network and GPU meters that live in the Windows taskbar"
 license = "MIT"
 edition = "2021"

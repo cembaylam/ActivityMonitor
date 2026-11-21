@@ -366,6 +366,7 @@ struct App {
     show: [bool; N],
     tmp_ok: bool,
     fan_ok: bool,
+    tray_units: u32,
     order: [usize; N],
     n_show: usize,
     // data
@@ -986,6 +987,31 @@ fn read_theme_dark() -> bool {
     }
 }
 
+const REG_KEY: &str = "Software\\ActivityMonitor";
+
+fn load_tray_units() -> u32 {
+    unsafe {
+        let mut data = 0u32;
+        let mut sz = 4u32;
+        let r = RegGetValueW(HKEY_CURRENT_USER, wide(REG_KEY).as_ptr(), wide("TrayWidth").as_ptr(), RRF_RT_REG_DWORD, null_mut(), &mut data as *mut _ as *mut c_void, &mut sz);
+        if r == 0 && data > 60 && data < 700 {
+            data
+        } else {
+            0
+        }
+    }
+}
+
+fn save_tray_units(units: u32) {
+    unsafe {
+        let mut hk: HKEY = null_mut();
+        if RegCreateKeyExW(HKEY_CURRENT_USER, wide(REG_KEY).as_ptr(), 0, null(), 0, KEY_SET_VALUE, null(), &mut hk, null_mut()) == 0 {
+            RegSetValueExW(hk, wide("TrayWidth").as_ptr(), 0, REG_DWORD, &units as *const u32 as *const u8, 4);
+            RegCloseKey(hk);
+        }
+    }
+}
+
 fn find_taskbar() -> HWND {
     unsafe { FindWindowW(wide("Shell_TrayWnd").as_ptr(), null()) }
 }
@@ -1041,8 +1067,19 @@ fn layout(a: &mut App) {
         let tray = FindWindowExW(tb, null_mut(), wide("TrayNotifyWnd").as_ptr(), null());
         if !tray.is_null() {
             GetWindowRect(tray, &mut rtn);
+        }
+        // Right after sign-in Explorer reports an empty TrayNotifyWnd rect for a while (and on some builds
+        // forever). Only trust a plausible rect; otherwise fall back to the last width we saw.
+        let tray_w = rtb.right - rtn.left;
+        if !tray.is_null() && rtn.right > rtn.left && tray_w > (60.0 * scale) as i32 && tray_w < (700.0 * scale) as i32 {
+            let units = (tray_w as f32 / scale).round() as u32;
+            if units != a.tray_units {
+                a.tray_units = units;
+                save_tray_units(units);
+            }
         } else {
-            rtn.left = rtb.right - (200.0 * scale) as i32;
+            let units = if a.tray_units > 0 { a.tray_units } else { 240 };
+            rtn.left = rtb.right - (units as f32 * scale) as i32;
         }
         a.scale = scale;
         let (x_first, cw, gap, _, _) = {
@@ -1464,6 +1501,7 @@ fn main() {
             show: [true, true, true, true, true, false, true, has_gpu],
             tmp_ok: false,
             fan_ok: false,
+            tray_units: load_tray_units(),
             order: [0; N],
             n_show: 0,
             hist: [[0.0; HIST]; N],
