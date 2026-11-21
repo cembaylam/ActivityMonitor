@@ -1,4 +1,3 @@
 /target/
-/installer/*.msi
 /installer/*.wixpdb
 *.log
